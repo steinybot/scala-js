@@ -171,7 +171,13 @@ private class Tagger(infos: ModuleAnalyzer.DependencyInfo,
     edgesToProcess ++= entryPointEdges()
 
     while (edgesToProcess.nonEmpty) {
-      edgesToProcess ++= processEdge(edgesToProcess.dequeue())
+      val edge = edgesToProcess.dequeue()
+      val dynamicDependencies = processEdge(edge)
+      dynamicDependencies.foreach { dynamicClassName =>
+        import edge._
+        edgesToProcess +=
+          dynamicEdge(dynamicClassName, pathRoot, pathSteps, newExcludedHopCount, fromExcluded = isExcluded)
+      }
     }
 
     for {
@@ -182,14 +188,8 @@ private class Tagger(infos: ModuleAnalyzer.DependencyInfo,
     }
   }
 
-  private def processEdge(edge: Edge): Iterable[Edge] = {
+  private def processEdge(edge: Edge): Set[ClassName] = {
     import edge._
-
-    val isExcluded = excludedClasses.contains(className)
-
-    val newExcludedHopCount =
-      if (fromExcluded && !isExcluded) excludedHopCount + 1 // hop from fine to coarse
-      else excludedHopCount
 
     val updated = allPaths
       .getOrElseUpdate(className, new Paths)
@@ -197,17 +197,16 @@ private class Tagger(infos: ModuleAnalyzer.DependencyInfo,
 
     if (updated) {
       val classInfo = infos.classDependencies(className)
-      val staticEdges = classInfo
+
+      val transitiveDynamicDependencies = classInfo
         .staticDependencies
-        .map(staticEdge(_, pathRoot, pathSteps, newExcludedHopCount, fromExcluded = isExcluded))
+        .flatMap { className =>
+          processEdge(staticEdge(className, pathRoot, pathSteps, newExcludedHopCount, fromExcluded = isExcluded))
+        }
 
-      val dynamicEdges = classInfo
-        .dynamicDependencies
-        .map(dynamicEdge(_, pathRoot, pathSteps, newExcludedHopCount, fromExcluded = isExcluded))
-
-      staticEdges ++ dynamicEdges
+      transitiveDynamicDependencies ++ classInfo.dynamicDependencies
     } else {
-      Iterable.empty
+      Set.empty
     }
   }
 
@@ -230,9 +229,6 @@ private class Tagger(infos: ModuleAnalyzer.DependencyInfo,
           excludedHopCount = 0, fromExcluded = false)
     }
   }
-}
-
-private object Tagger {
 
   private final class Edge(
     val className: ClassName,
@@ -240,7 +236,16 @@ private object Tagger {
     val pathSteps: List[ClassName],
     val excludedHopCount: Int,
     val fromExcluded: Boolean
-  )
+  ) {
+    val isExcluded: Boolean = excludedClasses.contains(className)
+
+    val newExcludedHopCount: Int =
+      if (fromExcluded && !isExcluded) excludedHopCount + 1 // hop from fine to coarse
+      else excludedHopCount
+  }
+}
+
+private object Tagger {
 
   /** "Interesting" paths that can lead to a given class.
    *
